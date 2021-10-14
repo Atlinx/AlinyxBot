@@ -9,12 +9,12 @@ Alinyx is a general purpose discord bot. Right now it mostly serves as a playgro
 ```bash
 > npm install
 ```
-3. Create a `config.json` file inside the cloned repository folder. It should contain
+3. Create a `config.json` file inside the cloned repository folder. It should contain,
 ```json
 {
-	clientId: "...",
-	guildId: "...",
-	token: "...",
+	"clientId": "...",
+	"guildId": "...",
+	"token": "...",
 }
 ```
 
