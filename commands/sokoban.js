@@ -538,7 +538,7 @@ module.exports = {
 					return;
 				
 				const activeGame = activeGames.get(interaction.user.id);
-				await activeGame.exit();
+				await activeGame.exit(true);
 			}
 		},
 		{
@@ -635,14 +635,18 @@ module.exports = {
 						sokobanEmbed()
 						.setDescription(
 							this.sokobanBoard.generateVisuals() + 
-							`\n\n🎊 You won in **${this.sokobanBoard.moveCount}** moves! 🎊`
+							`\n\n🎊 <@${this.userId}> won in **${this.sokobanBoard.moveCount}** moves! 🎊`
 						)
 					],
 					components: [],
 				});
 				await setTimeout(() => this.exit(), 3000);
 			},
-			async exit() {
+			async exit(deleteMessage) {
+				if (typeof deleteMessage === 'undefined')
+					deleteMessage = false;
+				if (deleteMessage)
+					await activeGames.get(this.userId).message.delete();
 				activeGames.delete(this.userId);
 			},
 			async setMessageContent(content) {
