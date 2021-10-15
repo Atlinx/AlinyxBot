@@ -6,7 +6,7 @@ const { token } = require('./config.json');
 const ytdl = require('ytdl-core');
 const fs = require('fs');
 
-const buttons = new Collection();
+const components = new Collection();
 const client = new Client({ 
 	intents: [Intents.FLAGS.GUILDS, Intents.FLAGS.GUILD_MESSAGES] 
 });
@@ -25,13 +25,13 @@ client.once('disconnect', () => {
 });
 
 client.on('interactionCreate', async interaction => {
-	if (interaction.isButton()) {
-		const button = buttons.get(interaction.customId);
+	if (interaction.isMessageComponent()) {
+		const component = components.get(interaction.customId);
 
-		if (!button) return;
+		if (!component) return;
 
 		try {
-			await button.execute(interaction);
+			await component.execute(interaction);
 		} catch (error) {
 			console.error(error);
 			await interaction.reply({ content: 'There was an error while executing this button interaction!', ephemeral: true });
@@ -59,11 +59,11 @@ for (const file of commandFiles) {
 	// Set a new item in the Collection
 	// With the key as the command name and the value as the exported module
 	client.commands.set(command.data.name, command);
-	if (command.hasOwnProperty('buttons'))
+	if (command.hasOwnProperty('components'))
 	{
-		for (const buttonIdx in command.buttons) {
-			const button = command.buttons[buttonIdx];
-			buttons.set(button.id, button);
+		for (const componentIdx in command.components) {
+			const component = command.components[componentIdx];
+			components.set(component.id, component);
 		}
 	}
 }

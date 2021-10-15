@@ -1,6 +1,6 @@
 const { SlashCommandBuilder } = require('@discordjs/builders');
 const { defaultEmbed } = require('../constants');
-const { MessageActionRow, MessageButton, MessageEmbed } = require('discord.js');
+const { MessageActionRow, MessageButton, MessageEmbed, Message, MessageSelectMenu } = require('discord.js');
 const { Collection } = require('discord.js');
 const { EventEmitter } = require('events');
 const fs = require('fs');
@@ -29,38 +29,65 @@ function sokobanEmbed() {
 	return defaultEmbed().setTitle("📦 Sokoban");
 }
 
-function sokobanButtonRows() {
+function sokobanGameplayRows() {
 	return [
-				new MessageActionRow()
-					.addComponents(
-						module.exports.buttons[0].data,
-						module.exports.buttons[1].data,
-						module.exports.buttons[2].data,
-						module.exports.buttons[3].data,
-						),
-				new MessageActionRow()
-					.addComponents(
-						module.exports.buttons[4].data,
-						module.exports.buttons[5].data,
-						)
-			]
+		new MessageActionRow()
+			.addComponents(
+				module.exports.components[0].data,
+				module.exports.components[1].data,
+				module.exports.components[2].data,
+				module.exports.components[3].data,
+			),
+		new MessageActionRow()
+			.addComponents(
+				module.exports.components[4].data,
+				module.exports.components[5].data,
+			)
+	]
 }
 
-function sokobanInteractionContent() {
-	return { 
-				embeds: [
-					sokobanEmbed()
-				], 
-				components: sokobanButtonRows(),
-			};
+function sokobanLevelSelectComponents() {
+	return [
+		new MessageActionRow()
+			.addComponents(
+				module.exports.components[6].data,
+			),
+		new MessageActionRow()
+			.addComponents(
+				module.exports.components[5].data,
+			)
+	]
 }
 
-const levels = []
+async function verifyButtonInteraction(interaction) {
+	const activeGame = activeGames.get(interaction.user.id);
+	if (typeof activeGame === 'undefined' || interaction.message.id !== activeGame.message.id) {
+		await interaction.reply({ embeds: [
+			defaultEmbed('ATTENTION')
+				.setDescription("You can only interact with games that are you are in!")
+			],
+			ephemeral: true
+		});
+		return false;
+	}
+	return true;
+}
+
+
+let levels = [];
 
 try {
+	// Seems like there are extra spaces before a newline, which is why
+	// we need to regex with the '\s*' pattern to match these spaces.
 	const levelData = fs.readFileSync('./commands/sokoban-levels.txt', 'utf-8');
-	levels.push(levelData);
-	// TODO: add parsing for multiple levels
+	levels = levelData.split(/\n\s*\n/)
+		.map((rawData) => {
+			const sections = rawData.split(/\n-*\s*\n/);
+			return {
+				data: sections[0],
+				description: sections[1],
+			}
+		});
 } catch (e) {
 	console.error(e);
 }
@@ -110,7 +137,7 @@ class Vector2 {
 		return this.x >= smallest.x &&
 			this.y >= smallest.y &&
 			this.x <= largest.x &&
-			this.x <= largest.y;
+			this.y <= largest.y;
 	}
 
 	toString() {
@@ -210,7 +237,14 @@ class SimulationGrid {
 				});
 				return true;
 			case BlockEnum.BOX:
-				return this.pushGetSteps(position, direction, steps);	
+				if (this.tryPushGetMoveSteps(futurePos, direction, steps)) {
+					steps.push({
+						from: position,
+						to: futurePos,
+					})
+					return true;
+				}
+				return false;
 			// TODO: Add sticky boxes	
 		}
 	}
@@ -233,16 +267,21 @@ class SimulationGrid {
 
 class SokobanBoard {
 	constructor () {
+		this.reset();
+		this.eventEmitter = new EventEmitter();
+		
+		// Events	Args
+		// 'win'	none
+	}
+
+	reset() {
 		this.frontGrid = new SimulationGrid();
 		this.backGrid = new SimulationGrid();
 		this.boxGoals = [];
 		this.players = [];
-		this.eventEmitter = new EventEmitter();
+		this.moveCount = 0;
 		this.stopAfterWin = true;
 		this.won = false;
-		
-		// Events	Args
-		// 'win'	none
 	}
 
 	get size() {
@@ -267,7 +306,6 @@ class SokobanBoard {
 	}
 
 	movePlayer(playerId, direction) {
-		console.log('moving');
 		if (this.stopAfterWin && this.won)
 			return;
 		if (playerId >= this.players.length) 
@@ -289,14 +327,16 @@ class SokobanBoard {
 			case BlockEnum.BOX:
 				const actions = [];
 				const moveSteps = []
-				if (this.frontGrid.clone().tryPushGetMoveSteps(futurePos, direction, moveSteps)) {
-					this.frontGrid.moveSteps(moveSteps);
-				}
+				if (!this.frontGrid.clone().tryPushGetMoveSteps(futurePos, direction, moveSteps))
+					return;
+				this.frontGrid.moveSteps(moveSteps);
 				break;
 		}
 
 		this.frontGrid.move(player.position, futurePos);
 		player.position = futurePos;
+
+		this.moveCount++;
 
 		if (this.verifyWin()) {
 			this.won = true;
@@ -323,16 +363,16 @@ class SokobanBoard {
 
 	// NOTE: Emoji parsing current doesn't work,
 	//		 since the flushed emoji cannot be parsed in utf-8.
-	static fromText(boardText) {
+	loadFromText(boardText) {
 		if (!(typeof(boardText) === 'string'))
-			throw new Error("Vector2.multiply() expected 'scalar' to be a number.")
-		
-		const board = new SokobanBoard();
+			throw new Error("loadFromText() expected 'boardText' to be a string.")
+
+		this.reset();
 
 		let frontRow = [];
 		let backRow = [];
-		board.frontGrid.grid.push(frontRow);
-		board.backGrid.grid.push(backRow);
+		this.frontGrid.grid.push(frontRow);
+		this.backGrid.grid.push(backRow);
 
 		let i = 0;
 		let x = 0;
@@ -342,21 +382,21 @@ class SokobanBoard {
 				case '\n':
 					frontRow = [];
 					backRow = [];
-					board.frontGrid.grid.push(frontRow);
-					board.backGrid.grid.push(backRow);
+					this.frontGrid.grid.push(frontRow);
+					this.backGrid.grid.push(backRow);
 					y++;
 					x = -1;
 					break
 				case '_':
+				case ' ':
 				case '⬛':
 					frontRow.push(BlockEnum.AIR);
 					backRow.push(BlockEnum.AIR);
 					break;
 				case 'P':
 				case '😳':
-					console.log('adding player to pos: ' + new Vector2(x, y));
-					board.players.push({
-						id: board.players.length,
+					this.players.push({
+						id: this.players.length,
 						position: new Vector2(x, y),
 					});
 					frontRow.push(BlockEnum.PLAYER);
@@ -371,7 +411,7 @@ class SokobanBoard {
 				case '❎':
 					frontRow.push(BlockEnum.AIR);
 					backRow.push(BlockEnum.BOXGOAL);
-					board.boxGoals.push({
+					this.boxGoals.push({
 						type: BlockEnum.BOXGOAL,
 						position: new Vector2(x, y),
 					});
@@ -385,7 +425,6 @@ class SokobanBoard {
 			x++;
 			i++;
 		}
-		return board;
 	}
 }
 
@@ -393,7 +432,7 @@ module.exports = {
 	data: new SlashCommandBuilder()
 		.setName('sokoban')
 		.setDescription('Play a game of sokoban.'),
-	buttons: [
+	components: [
 		{
 			id: prefix + 'left',
 			get data() {
@@ -403,8 +442,13 @@ module.exports = {
 					.setStyle('SECONDARY')
 			},
 			async execute(interaction) {
-				activeGames.get(interaction.user.id).sokobanBoard.movePlayer(0, Vector2.left);
-				await activeGames.get(interaction.user.id).updateVisuals(interaction);
+				if (!(await verifyButtonInteraction(interaction)))
+					return;
+				
+				const activeGame = activeGames.get(interaction.user.id);
+				activeGame.sokobanBoard.movePlayer(0, Vector2.left);
+				await activeGame.updateVisuals();
+				await interaction.update(activeGame.currentMessageContent);
 			}
 		},
 		{
@@ -416,9 +460,14 @@ module.exports = {
 					.setStyle('SECONDARY')
 			},
 			async execute(interaction) {
+				if (!(await verifyButtonInteraction(interaction)))
+					return;
+				
+				const activeGame = activeGames.get(interaction.user.id);
 				// We use down to represent up since the array is constructed top to bottom
-				activeGames.get(interaction.user.id).sokobanBoard.movePlayer(0, Vector2.down);
-				await activeGames.get(interaction.user.id).updateVisuals(interaction);
+				activeGame.sokobanBoard.movePlayer(0, Vector2.down);
+				await activeGame.updateVisuals();
+				await interaction.update(activeGame.currentMessageContent);
 			},
 		}, 
 		{
@@ -430,9 +479,14 @@ module.exports = {
 					.setStyle('SECONDARY')
 			},
 			async execute(interaction) {
+				if (!(await verifyButtonInteraction(interaction)))
+					return;
+				
+				const activeGame = activeGames.get(interaction.user.id);
 				// We use up to represent down since the array is constructed top to bottom
-				activeGames.get(interaction.user.id).sokobanBoard.movePlayer(0, Vector2.up);
-				await activeGames.get(interaction.user.id).updateVisuals(interaction);
+				activeGame.sokobanBoard.movePlayer(0, Vector2.up);
+				await activeGame.updateVisuals();
+				await interaction.update(activeGame.currentMessageContent);
 			}
 		}, 
 		{ 
@@ -444,8 +498,13 @@ module.exports = {
 					.setStyle('SECONDARY')
 			},
 			async execute(interaction) {
-				activeGames.get(interaction.user.id).sokobanBoard.movePlayer(0, Vector2.right);
-				await activeGames.get(interaction.user.id).updateVisuals(interaction);
+				if (!(await verifyButtonInteraction(interaction)))
+					return;
+				
+				const activeGame = activeGames.get(interaction.user.id);
+				activeGame.sokobanBoard.movePlayer(0, Vector2.right);
+				await activeGame.updateVisuals();
+				await interaction.update(activeGame.currentMessageContent);
 			}
 		},
 		{
@@ -457,10 +516,13 @@ module.exports = {
 					.setStyle('PRIMARY')
 			},
 			async execute(interaction) {
+				if (!(await verifyButtonInteraction(interaction)))
+					return;
+				
 				const activeGame = activeGames.get(interaction.user.id);
-				activeGame.sokobanBoard = SokobanBoard.fromText(levels[0]);
-				activeGame.sokobanBoard.eventEmitter.addListener('win', activeGame.onWin.bind(activeGame))
-				await activeGame.updateVisuals(interaction);
+				activeGame.sokobanBoard.loadFromText(activeGame.level.data);
+				await activeGame.updateVisuals();
+				await interaction.update(activeGame.currentMessageContent);
 			}
 		},
 		{
@@ -472,20 +534,70 @@ module.exports = {
 					.setStyle('DANGER')
 			},
 			async execute(interaction) {
-				await activeGames.get(interaction.user.id).exit();
+				if (!(await verifyButtonInteraction(interaction)))
+					return;
+				
+				const activeGame = activeGames.get(interaction.user.id);
+				await activeGame.exit();
 			}
+		},
+		{
+			id: prefix + 'load-level',
+			get data() {
+				const options = [];
+				for (let i = 0; i < levels.length; i++) {
+					options.push({
+						label: `Level ${(i + 1)}`,
+						description: levels[i].description,
+						value: i.toString(),
+					});
+				}
+
+				return new MessageSelectMenu()
+					.setCustomId(this.id)
+					.setPlaceholder('Select Level')
+					.addOptions(options);
+			},
+			async execute(interaction) {
+				if (!(await verifyButtonInteraction(interaction)))
+					return;
+
+				const activeGame = activeGames.get(interaction.user.id);
+
+				if (interaction.values.length === 0) {
+					await interaction.reply({
+						embeds: [
+							defaultEmbed('ATTENTION')
+								.setDescription('Please select a level!')
+						] 
+					});
+					return;
+				}
+
+				activeGame.level = levels[interaction.values[0]];
+				activeGame.sokobanBoard.loadFromText(activeGame.level.data);
+				
+				await activeGame.updateVisuals();
+				await interaction.update(activeGame.currentMessageContent);
+			} 
 		}],
 	async execute(interaction) {
 		const activeGame = activeGames.get(interaction.user.id);
 		if (activeGame) {
 			if (activeGame.message != null)
 				await interaction.reply({
-						content: `A sokoban game for you is already running [here](${activeGame.message.url})!`,
+						embeds: [
+							defaultEmbed('ATTENTION')
+								.setDescription(`A sokoban game for you is already running [here](${activeGame.message.url})!`)
+						],
 						ephemeral: true	
 					});
 			else
 				await interaction.reply({
-						content: `A sokoban game for you is already starting up!`,
+						embeds: [
+							defaultEmbed('ATTENTION')
+								.setDescription(`A sokoban game for you is already starting up!`)
+						],
 						ephemeral: true	
 					});
 			return;
@@ -494,44 +606,63 @@ module.exports = {
 		// Setup a new active game for the player
 		const newActiveGame = {
 			userId: interaction.user.id,
+			level: null,
 			message: null,
-			sokobanBoard: SokobanBoard.fromText(levels[0]),
-			async updateVisuals(visualInteraction) {
+			currentMessageContent: null,
+			sokobanBoard: new SokobanBoard(),
+			async updateVisuals() {
 				if (activeGames.get(interaction.user.id).sokobanBoard.won)
 					// Don't update the visuals if we won
 					return;
 				
-				if (typeof visualInteraction !== 'undefined')
-					await visualInteraction.update({ 
-							embeds: [sokobanEmbed()
-								.setDescription(this.sokobanBoard.generateVisuals()) ],
-							components: sokobanButtonRows(),
-							});
-				else
-					await this.message.edit({ embeds: [sokobanEmbed()
-						.setDescription(this.sokobanBoard.generateVisuals())]
-						});
+				await this.setMessageContent({ 
+					embeds: [
+						sokobanEmbed()
+							.setDescription(this.sokobanBoard.generateVisuals())
+							.addFields(
+								{ name: "Moves", value: `${this.sokobanBoard.moveCount}`, inline: true },
+								// TODO: Add highscore system
+								// { name: "High Score", value: `${this.sokobanBoard.moveCount}`, inline: true }
+							)
+						],
+					components: sokobanGameplayRows(),
+				});
 			},
 			async onWin() {
-				this.message.edit({ embeds: [sokobanEmbed()
-					.setDescription(this.sokobanBoard.generateVisuals() + "\n\n🎊 **You won!** 🎊")
-				]});
+				// Remove button rows
+				this.setMessageContent({
+					embeds: [
+						sokobanEmbed()
+						.setDescription(
+							this.sokobanBoard.generateVisuals() + 
+							`\n\n🎊 You won in **${this.sokobanBoard.moveCount}** moves! 🎊`
+						)
+					],
+					components: [],
+				});
 				await setTimeout(() => this.exit(), 3000);
 			},
 			async exit() {
-				await this.message.delete();
 				activeGames.delete(this.userId);
+			},
+			async setMessageContent(content) {
+				this.currentMessageContent = content;
+				await this.message.edit(content);
 			}
 		}
 		newActiveGame.sokobanBoard.eventEmitter.addListener('win', newActiveGame.onWin.bind(newActiveGame))
 		
 		activeGames.set(interaction.user.id, newActiveGame);
-		const content = sokobanInteractionContent()
-		content.fetchReply = true;
-		await interaction.reply(content)
+		await interaction.reply({ 
+				embeds: [
+					sokobanEmbed()
+						.setDescription('👇 Select a level to play! 👇')
+				], 
+				components: sokobanLevelSelectComponents(),
+				fetchReply: true,
+			})
 			.then(msg => { 
 				newActiveGame.message = msg;
-				newActiveGame.updateVisuals();
 			})
 			.catch(console.error);
 	},
